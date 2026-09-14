@@ -9,7 +9,7 @@ Licensed under the MIT License
   <meta name='viewport' content='width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover'>
   <meta name='mobile-web-app-capable' content='yes'>
   <meta name='apple-mobile-web-app-capable' content='yes'>
-  <link rel='icon' type='image/png' sizes='32x32' href='favicon-32x32.png'>
+  <link rel='icon' type='image/png' sizes='3232' href='favicon-32x32.png'>
   <link rel='icon' type='image/png' sizes='96x96' href='favicon-96x96.png'>
   <link rel='stylesheet' href='css/common.css'>
   <title>Seguimiento a escala de la habitacion (Magic Window)</title>
@@ -19,8 +19,7 @@ Licensed under the MIT License
     <details open>
       <summary>Escala de habitacion</summary>
       <p>
-        Haz clic abajo para iniciar. Explora el entorno en 360 grados con la palanca derecha del control Xbox Robot White.
-        Usa la cruceta para fijar ejes: izquierda/derecha bloquea pitch, arriba/abajo bloquea yaw.
+        Haz clic abajo para iniciar. Explora el entorno en 360 grados arrastrando tu dedo en la pantalla del celular o con el ratón en la computadora.
         <a class="back" href="./">Back</a>
       </p>
     </details>
@@ -32,6 +31,7 @@ Licensed under the MIT License
     import { Renderer, createWebGLContext } from './js/render/core/renderer.js';
     import { Gltf2Node } from './js/render/nodes/gltf2.js';
     import { SkyboxNode } from './js/render/nodes/skybox.js';
+    import { InlineViewerHelper } from './js/util/inline-viewer-helper.js';
     import { QueryArgs } from './js/util/query-args.js';
 
     import WebXRPolyfill from './js/third-party/webxr-polyfill/build/webxr-polyfill.module.js';
@@ -42,82 +42,15 @@ Licensed under the MIT License
     let xrButton = null;
     let xrSession = null;
     let xrRefSpace = null;
+    let inlineViewerHelper = null;
 
     let gl = null;
     let renderer = null;
     let scene = new Scene();
 
-    scene.addNode(new Gltf2Node({url: 'media/gltf/campB/Cuartitoti.glb'}));
+    scene.addNode(new Gltf2Node({url: 'media/gltf/camp/Cuartitoti.gltf'}));
     scene.addNode(new SkyboxNode({url: 'media/textures/textura.png'}));
     scene.standingStats(true);
-
-    // ============================================================
-    // CÁMARA CON GAMEPAD + CRUCETA PARA BLOQUEO DE EJES
-    // ============================================================
-    const VIEWER_HEIGHT = 1.6;
-    let camYaw = 0;
-    let camPitch = 0;
-
-    let lockedYaw = null;
-    let lockedPitch = null;
-
-    function getXboxGamepad() {
-      let gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
-      for (let gp of gamepads) {
-        if (gp && gp.connected && gp.id && gp.id.toLowerCase().includes('xbox')) {
-          return gp;
-        }
-      }
-      for (let gp of gamepads) {
-        if (gp && gp.connected && gp.axes && gp.axes.length >= 4) {
-          return gp;
-        }
-      }
-      return null;
-    }
-
-    function updateGamepadCamera() {
-      let gp = getXboxGamepad();
-      if (!gp) return;
-
-      const DEADZONE = 0.15;
-      const SENSITIVITY = 0.03;
-
-      let dpadUp = gp.buttons[12] && gp.buttons[12].pressed;
-      let dpadDown = gp.buttons[13] && gp.buttons[13].pressed;
-      let dpadLeft = gp.buttons[14] && gp.buttons[14].pressed;
-      let dpadRight = gp.buttons[15] && gp.buttons[15].pressed;
-
-      let dpadHorizontal = dpadLeft || dpadRight;
-      let dpadVertical = dpadUp || dpadDown;
-
-      if (dpadHorizontal && lockedPitch === null) {
-        lockedPitch = camPitch;
-      }
-      if (dpadVertical && lockedYaw === null) {
-        lockedYaw = camYaw;
-      }
-
-      if (!dpadHorizontal) lockedPitch = null;
-      if (!dpadVertical) lockedYaw = null;
-
-      let rx = gp.axes[2];
-      let ry = gp.axes[3];
-
-      if (lockedYaw === null && Math.abs(rx) > DEADZONE) {
-        camYaw -= rx * SENSITIVITY;
-      }
-
-      // CORREGIDO: -= en lugar de += para que arriba del stick sea arriba
-      if (lockedPitch === null && Math.abs(ry) > DEADZONE) {
-        camPitch -= ry * SENSITIVITY;
-      }
-
-      camPitch = Math.max(-Math.PI * 0.5, Math.min(Math.PI * 0.5, camPitch));
-      while (camYaw > Math.PI) camYaw -= 2 * Math.PI;
-      while (camYaw < -Math.PI) camYaw += 2 * Math.PI;
-    }
-    // ============================================================
 
     function initXR() {
       xrButton = new WebXRButton({
@@ -137,6 +70,8 @@ Licensed under the MIT License
     }
 
     function onRequestSession() {
+      // SOLUCIÓN AL FONDO NEGRO: Al pedir una sesión inline, pasamos explícitamente la característica "viewer"
+      // Esto le otorga al navegador los permisos internos necesarios para instanciar la cámara en pantalla plana.
       return navigator.xr.requestSession('inline', {
         requiredFeatures: ['viewer']
       }).then(onSessionStarted);
@@ -152,8 +87,14 @@ Licensed under the MIT License
       let glLayer = new XRWebGLLayer(session, gl);
       session.updateRenderState({ baseLayer: glLayer });
 
+      // Solicitamos el espacio de referencia básico que permite inicializar el lienzo
       session.requestReferenceSpace('viewer').then((refSpace) => {
         xrRefSpace = refSpace;
+        
+        // Inicializamos el asistente para poder mover la cámara arrastrando con el dedo o con el ratón
+        inlineViewerHelper = new InlineViewerHelper(gl.canvas, refSpace);
+        inlineViewerHelper.setHeight(1.6); 
+
         session.requestAnimationFrame(onXRFrame);
       });
     }
@@ -187,40 +128,16 @@ Licensed under the MIT License
 
     function onXRFrame(t, frame) {
       let session = frame.session;
-
-      updateGamepadCamera();
-
-      let refSpace = xrRefSpace;
-
-      let halfYaw = -camYaw * 0.5;
-      let halfPitch = -camPitch * 0.5;
-      let cy = Math.cos(halfYaw);
-      let sy = Math.sin(halfYaw);
-      let cp = Math.cos(halfPitch);
-      let sp = Math.sin(halfPitch);
-
-      let q = {
-        w: cp * cy,
-        x: sp * cy,
-        y: cp * sy,
-        z: sp * sy
-      };
-
-      let xform = new XRRigidTransform(
-        { x: 0, y: 0, z: 0 },
-        { x: q.x, y: q.y, z: q.z, w: q.w }
-      );
-      refSpace = refSpace.getOffsetReferenceSpace(xform);
-
-      xform = new XRRigidTransform({ y: -VIEWER_HEIGHT });
-      refSpace = refSpace.getOffsetReferenceSpace(xform);
-
+      
+      // Consultamos la pose generada a través de las interacciones táctiles/ratón calculadas por el helper
+      let refSpace = inlineViewerHelper ? inlineViewerHelper.referenceSpace : xrRefSpace;
       let pose = frame.getViewerPose(refSpace);
 
       scene.startFrame();
       session.requestAnimationFrame(onXRFrame);
 
       if (pose) {
+        // Renderizamos de manera segura la capa de dibujo
         scene.drawXRFrame(frame, pose);
       }
 
